@@ -1,0 +1,34 @@
+{
+  "name": "webhook-lens",
+  "version": "1.0.0",
+  "description": "Capture, inspect and replay inbound webhooks locally, verifying provider HMAC signatures before trusting a payload.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Prabesh Sharma",
+  "bin": {
+    "webhook-lens": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint . --ext .ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "@typescript-eslint/eslint-plugin": "^7.16.1",
+    "@typescript-eslint/parser": "^7.16.1",
+    "eslint": "^8.57.0",
+    "typescript": "^5.5.3",
+    "vitest": "^1.6.0"
+  }
+}

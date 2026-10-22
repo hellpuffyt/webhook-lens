@@ -48,8 +48,9 @@ export function verifyStripeSignature(
     return { valid: false, reason: 'missing v1 signature in signature header' };
   }
 
-  const signedPayload = `${parts.timestamp}.${rawBody.toString('utf8')}`;
-  const expectedHex = createHmac('sha256', secret).update(signedPayload, 'utf8').digest('hex');
+  // Sign `${t}.` followed by the raw body BYTES. Decoding the body to a UTF-8
+  // string first would corrupt any non-UTF-8 byte and break verification.
+  const expectedHex = createHmac('sha256', secret).update(`${parts.timestamp}.`, 'utf8').update(rawBody).digest('hex');
 
   const matched = parts.v1Signatures.some((sig) => timingSafeEqualHex(expectedHex, sig));
   if (!matched) {
@@ -57,6 +58,12 @@ export function verifyStripeSignature(
   }
 
   const toleranceSeconds = options.toleranceSeconds ?? DEFAULT_TOLERANCE_SECONDS;
+  // A NaN tolerance would make `age > tolerance` always false and silently
+  // disable the replay-window check, so reject anything that is not a
+  // non-negative finite number.
+  if (!Number.isFinite(toleranceSeconds) || toleranceSeconds < 0) {
+    return { valid: false, reason: 'invalid tolerance (must be a non-negative number of seconds)' };
+  }
   const nowMs = options.now ?? Date.now();
   const nowSeconds = Math.floor(nowMs / 1000);
   const age = Math.abs(nowSeconds - parts.timestamp);
@@ -91,7 +98,6 @@ function parseStripeHeader(headerValue: string): { timestamp?: number; v1Signatu
 
 /** Build a `Stripe-Signature` header value for a payload, e.g. for replay re-signing. */
 export function signStripe(rawBody: Buffer, secret: string, timestampSeconds: number = Math.floor(Date.now() / 1000)): string {
-  const signedPayload = `${timestampSeconds}.${rawBody.toString('utf8')}`;
-  const v1 = createHmac('sha256', secret).update(signedPayload, 'utf8').digest('hex');
+  const v1 = createHmac('sha256', secret).update(`${timestampSeconds}.`, 'utf8').update(rawBody).digest('hex');
   return `t=${timestampSeconds},v1=${v1}`;
 }

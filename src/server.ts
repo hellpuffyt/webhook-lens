@@ -11,6 +11,8 @@ export interface ReceiverOptions {
   maxBodyBytes?: number;
   /** Called after each delivery is captured and persisted. */
   onDelivery?: (delivery: Delivery) => void;
+  /** Called when a delivery could not be persisted (the sender only gets a generic 500). */
+  onError?: (err: unknown) => void;
 }
 
 export interface Receiver {
@@ -79,8 +81,10 @@ export function startReceiver(store: DeliveryStore, options: ReceiverOptions = {
           res.end(JSON.stringify({ status: 'captured', id: delivery.id }));
         })
         .catch((err: unknown) => {
+          // Do not echo the error (it can contain local filesystem paths) back to the sender.
+          options.onError?.(err);
           res.writeHead(500, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ status: 'error', message: err instanceof Error ? err.message : String(err) }));
+          res.end(JSON.stringify({ status: 'error', message: 'failed to store delivery' }));
         });
     });
 

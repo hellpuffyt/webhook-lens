@@ -47,6 +47,9 @@ export function verifySlackSignature(
   }
 
   if (options.toleranceSeconds !== undefined) {
+    if (!Number.isFinite(options.toleranceSeconds) || options.toleranceSeconds < 0) {
+      return { valid: false, reason: 'invalid tolerance (must be a non-negative number of seconds)' };
+    }
     const ts = Number.parseInt(timestampHeader, 10);
     if (Number.isNaN(ts)) {
       return { valid: false, reason: 'malformed timestamp header' };
@@ -58,8 +61,8 @@ export function verifySlackSignature(
     }
   }
 
-  const basestring = `v0:${timestampHeader}:${rawBody.toString('utf8')}`;
-  const expectedHex = createHmac('sha256', secret).update(basestring, 'utf8').digest('hex');
+  // HMAC over `v0:{ts}:` followed by the raw body bytes (never a decoded string).
+  const expectedHex = createHmac('sha256', secret).update(`v0:${timestampHeader}:`, 'utf8').update(rawBody).digest('hex');
   const providedHex = signatureHeader.slice(prefix.length);
 
   if (!timingSafeEqualHex(expectedHex, providedHex)) {
@@ -70,6 +73,5 @@ export function verifySlackSignature(
 
 /** Compute the `X-Slack-Signature` header value for a payload, e.g. for replay re-signing. */
 export function signSlack(rawBody: Buffer, secret: string, timestampSeconds: number = Math.floor(Date.now() / 1000)): string {
-  const basestring = `v0:${timestampSeconds}:${rawBody.toString('utf8')}`;
-  return `v0=${createHmac('sha256', secret).update(basestring, 'utf8').digest('hex')}`;
+  return `v0=${createHmac('sha256', secret).update(`v0:${timestampSeconds}:`, 'utf8').update(rawBody).digest('hex')}`;
 }

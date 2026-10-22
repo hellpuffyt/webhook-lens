@@ -7,6 +7,17 @@ import type { Delivery } from './types.js';
 /** Default on-disk location for captured deliveries. */
 export const DEFAULT_STORE_DIR = path.join(process.cwd(), '.webhook-lens', 'deliveries');
 
+const DELIVERY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+/**
+ * True if `id` is safe to use as a delivery file name: letters, digits, `-`
+ * and `_` only. This rejects path separators and `..`, so a crafted id can
+ * never read, write, or delete a file outside the store directory.
+ */
+export function isValidDeliveryId(id: string): boolean {
+  return DELIVERY_ID_RE.test(id);
+}
+
 /**
  * Filesystem-backed store for captured deliveries. Each delivery is written
  * as its own JSON file named `<id>.json` so that captures are durable,
@@ -21,11 +32,15 @@ export class DeliveryStore {
   }
 
   private fileFor(id: string): string {
+    if (!isValidDeliveryId(id)) {
+      throw new Error(`Invalid delivery id: ${JSON.stringify(id.slice(0, 80))}`);
+    }
     return path.join(this.dir, `${id}.json`);
   }
 
   async ensureDir(): Promise<void> {
-    await mkdir(this.dir, { recursive: true });
+    // Captures contain signature/auth headers: keep the directory owner-only.
+    await mkdir(this.dir, { recursive: true, mode: 0o700 });
   }
 
   /** Persist a new delivery, generating an id and timestamp, and return the stored record. */
@@ -40,12 +55,17 @@ export class DeliveryStore {
       bodyBase64: input.bodyBase64,
       ...(input.remoteAddress !== undefined ? { remoteAddress: input.remoteAddress } : {}),
     };
-    await writeFile(this.fileFor(delivery.id), JSON.stringify(delivery, null, 2), 'utf8');
+    // Mode 0600 keeps captured secrets (Authorization, signature headers)
+    // readable by the owner only.
+    await writeFile(this.fileFor(delivery.id), JSON.stringify(delivery, null, 2), { encoding: 'utf8', mode: 0o600 });
     return delivery;
   }
 
-  /** Load a single delivery by id, or null if it does not exist. */
+  /** Load a single delivery by id, or null if it does not exist (or the id is not a valid delivery id). */
   async get(id: string): Promise<Delivery | null> {
+    if (!isValidDeliveryId(id)) {
+      return null;
+    }
     const file = this.fileFor(id);
     if (!existsSync(file)) {
       return null;
@@ -68,6 +88,9 @@ export class DeliveryStore {
 
   /** Delete a delivery by id. Returns true if it existed and was removed. */
   async delete(id: string): Promise<boolean> {
+    if (!isValidDeliveryId(id)) {
+      return false;
+    }
     const file = this.fileFor(id);
     if (!existsSync(file)) {
       return false;

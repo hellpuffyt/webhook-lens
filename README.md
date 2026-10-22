@@ -37,11 +37,12 @@ homegrown verification scripts quietly break.
   - A generic, configurable HMAC scheme for anything else
 - **Storage** -- every capture is written to disk as a standalone JSON file,
   listable and inspectable later.
-- **Replay** -- re-send a captured delivery to any target URL, with the
-  original raw body and headers preserved, optionally re-signed with your
-  own secret.
-- **Redaction** -- signatures, auth headers, and other sensitive values are
-  masked in CLI output by default.
+- **Replay** -- re-send a captured delivery to a local target URL
+  (`localhost`, `127.0.0.0/8`, `[::1]`; other hosts only with an explicit
+  `--allow-remote`), with the original raw body and headers preserved,
+  optionally re-signed with your own secret.
+- **Redaction** -- signatures, auth headers, other secret-looking headers,
+  and secret-looking query parameters are masked in CLI output by default.
 
 ## Architecture
 
@@ -109,7 +110,7 @@ Requires Node.js 18 or newer.
 webhook-lens listen [--port <n>] [--host <host>] [--dir <path>]
 webhook-lens list [--dir <path>]
 webhook-lens show <id> [--dir <path>] [--raw]
-webhook-lens replay <id> --to <url> [--resign-scheme <scheme> --resign-secret <secret>] [--dir <path>]
+webhook-lens replay <id> --to <url> [--resign-scheme <scheme> --resign-secret <secret>] [--allow-remote] [--dir <path>]
 webhook-lens verify <id> --scheme <scheme> --secret <secret> [--tolerance <seconds>] [--dir <path>]
                         [--header <name> --prefix <p> --encoding <hex|base64>]  (generic scheme only)
 ```
@@ -196,7 +197,7 @@ if (!result.valid) {
 ## Testing
 
 ```bash
-npm test          # vitest, 80+ tests
+npm test          # vitest, 110 tests
 npx tsc --noEmit  # type-check
 npx eslint .       # lint
 ```
@@ -215,16 +216,34 @@ and the HTTP receiver exercised against a real server on an ephemeral port.
 - Stripe (and, optionally, Slack) verification enforces a replay-window
   check against the signed timestamp.
 - Sensitive header values (`Authorization`, provider signature headers,
-  cookies, etc.) are redacted in CLI output by default; pass `--raw` to
-  `show` if you explicitly need to see them.
+  cookies, any header whose name contains `signature`, `secret`, `token`,
+  `api-key`, `auth`, ...) and secret-looking query parameters
+  (`?token=`, `?sig=`, ...) are redacted in CLI output and in the `listen`
+  log by default; pass `--raw` to `show` if you explicitly need to see them.
+- Capture files are stored unredacted (verification and replay need the
+  exact bytes), so they are written owner-only (`0600`, directory `0700`).
+  Treat the deliveries directory as secret material.
+- Delivery ids are restricted to `[A-Za-z0-9_-]`, so a crafted id cannot
+  read, write, or delete files outside the deliveries directory.
+- Replay only targets loopback hosts (`localhost`, `127.0.0.0/8`, `[::1]`)
+  unless you pass `--allow-remote`, because it forwards the captured
+  headers (including `Authorization` and signatures). Only `http`/`https`
+  targets are accepted, and URLs with embedded credentials are refused.
+- Numeric flags (`--port`, `--tolerance`) are parsed strictly; a malformed
+  `--tolerance` is an error rather than a silently disabled replay window.
 - The receiver binds to `127.0.0.1` by default -- it is meant for local use,
-  not as an internet-facing endpoint.
+  not as an internet-facing endpoint. Binding another host prints a warning.
+  There is no authentication, rate limiting, or disk quota on the receiver.
+- Secrets passed as `--secret` / `--resign-secret` are command-line
+  arguments: referencing an environment variable (`--secret "$VAR"`, as in
+  the examples) keeps the value out of shell history, but it is still
+  visible in the process list while the command runs.
 - No captured secret or delivery ever leaves your machine; there is no
   telemetry and no external network calls other than the ones you
   explicitly trigger with `replay`.
 
-If you find a security issue, please open an issue describing it (without
-including real secrets or payloads).
+If you find a security issue, please report it privately as described in
+[SECURITY.md](SECURITY.md) rather than in a public issue.
 
 ## License
 

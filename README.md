@@ -95,12 +95,16 @@ fails while verification against the stored raw bytes succeeds.
 ## Installation
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/hellpuffyt/webhook-lens.git
 cd webhook-lens
-npm install
+npm ci
 npm run build
 npm link   # optional: makes `webhook-lens` available globally
 ```
+
+webhook-lens is not published to npm; without `npm link`, run the CLI as
+`node dist/cli.js <command>`. The library import below resolves once the clone
+is linked (`npm link webhook-lens` in your project).
 
 Requires Node.js 18 or newer.
 

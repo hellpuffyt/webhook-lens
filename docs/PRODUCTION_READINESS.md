@@ -20,9 +20,9 @@ Zero runtime dependencies. Not published to npm; installed from a clone.
 
 ## Platforms and prerequisites
 
-- Node.js >= 18 (`engines`). Verified locally on macOS (Apple Silicon) with Node 24.19.0 (full gate),
+- Node.js >= 20 (`engines`; Node 18, end-of-life, was dropped with the vitest 4 upgrade). Verified locally on macOS (Apple Silicon) with Node 24.19.0 (full gate),
   and the test suite with Node 18.20.8, 20 and 22 (via `npx -p node@<v>`).
-- CI matrix (default branch): ubuntu / windows / macOS x Node 18 / 20 / 22.
+- CI matrix: ubuntu / windows / macOS x Node 20 / 22.
 - Windows was not run locally. The file-permission test is skipped on Windows
   (`it.skipIf(process.platform === 'win32')`) because POSIX modes do not apply there.
 

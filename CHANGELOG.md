@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Node.js 20 or newer is now required** (`engines.node` is `>=20`). Node 18
+  reached end-of-life on 2025-04-30 and has been dropped from the CI matrix.
+- Dev tooling: `vitest` 1.6 -> 4.1, which clears the dev-only critical/high
+  advisories in the vitest 1 chain (`vite`, `esbuild`, `vite-node`, ...).
+  `npm audit` now reports 0 vulnerabilities. No runtime behaviour changed.
+
 ### Security
 
 - `replay` now refuses non-loopback targets unless `--allow-remote`

@@ -3,40 +3,10 @@ import { DeliveryStore, DEFAULT_STORE_DIR } from './storage.js';
 import { startReceiver } from './server.js';
 import { replayDelivery } from './replay.js';
 import { verifyDelivery, deliveryRawBody } from './signatures/index.js';
-import { redactHeaders } from './redact.js';
+import { redactHeaders, redactPath } from './redact.js';
+import { isLoopbackHostname, ReplayTargetError } from './replay.js';
 import type { SignatureScheme } from './types.js';
-
-interface ParsedArgs {
-  positionals: string[];
-  flags: Record<string, string | boolean>;
-}
-
-function parseArgs(argv: string[]): ParsedArgs {
-  const positionals: string[] = [];
-  const flags: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === undefined) continue;
-    if (arg.startsWith('--')) {
-      const name = arg.slice(2);
-      const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith('--')) {
-        flags[name] = next;
-        i++;
-      } else {
-        flags[name] = true;
-      }
-    } else {
-      positionals.push(arg);
-    }
-  }
-  return { positionals, flags };
-}
-
-function flagString(flags: Record<string, string | boolean>, name: string): string | undefined {
-  const value = flags[name];
-  return typeof value === 'string' ? value : undefined;
-}
+import { parseArgs, flagString, flagInt, UsageError } from './args.js';
 
 function storeFor(flags: Record<string, string | boolean>): DeliveryStore {
   const dir = flagString(flags, 'dir') ?? DEFAULT_STORE_DIR;
@@ -50,25 +20,36 @@ Usage:
   webhook-lens listen [--port <n>] [--host <host>] [--dir <path>]
   webhook-lens list [--dir <path>]
   webhook-lens show <id> [--dir <path>] [--raw]
-  webhook-lens replay <id> --to <url> [--resign-scheme <scheme> --resign-secret <secret>] [--dir <path>]
+  webhook-lens replay <id> --to <url> [--resign-scheme <scheme> --resign-secret <secret>] [--allow-remote] [--dir <path>]
   webhook-lens verify <id> --scheme <scheme> --secret <secret> [--tolerance <seconds>] [--dir <path>]
                           [--header <name> --prefix <p> --encoding <hex|base64>]  (generic scheme only)
 
 Schemes: github, stripe, shopify, slack, generic
+Replay targets must be loopback (localhost, 127.0.0.0/8, [::1]) unless --allow-remote is given.
 `);
 }
 
 async function cmdListen(flags: Record<string, string | boolean>): Promise<void> {
   const store = storeFor(flags);
-  const portFlag = flagString(flags, 'port');
   const host = flagString(flags, 'host') ?? '127.0.0.1';
-  const port = portFlag ? Number.parseInt(portFlag, 10) : 8787;
+  const port = flagInt(flags, 'port') ?? 8787;
+  if (port > 65535) {
+    throw new UsageError(`--port must be between 0 and 65535, got ${port}`);
+  }
+  if (!isLoopbackHostname(host.includes(':') && !host.startsWith('[') ? `[${host}]` : host)) {
+    console.error(
+      `warning: binding to ${host} exposes the receiver beyond this machine; captured requests may contain secrets.`,
+    );
+  }
 
   const receiver = await startReceiver(store, {
     port,
     host,
     onDelivery: (delivery) => {
-      console.log(`[captured] ${delivery.id}  ${delivery.method} ${delivery.path}  (${delivery.receivedAt})`);
+      console.log(`[captured] ${delivery.id}  ${delivery.method} ${redactPath(delivery.path)}  (${delivery.receivedAt})`);
+    },
+    onError: (err) => {
+      console.error(`[error] failed to store delivery: ${err instanceof Error ? err.message : String(err)}`);
     },
   });
 
@@ -91,7 +72,7 @@ async function cmdList(flags: Record<string, string | boolean>): Promise<void> {
     return;
   }
   for (const d of deliveries) {
-    console.log(`${d.id}  ${d.receivedAt}  ${d.method} ${d.path}  (${Buffer.from(d.bodyBase64, 'base64').length} bytes)`);
+    console.log(`${d.id}  ${d.receivedAt}  ${d.method} ${redactPath(d.path)}  (${Buffer.from(d.bodyBase64, 'base64').length} bytes)`);
   }
 }
 
@@ -111,7 +92,7 @@ async function cmdShow(id: string | undefined, flags: Record<string, string | bo
   console.log(`id:          ${delivery.id}`);
   console.log(`receivedAt:  ${delivery.receivedAt}`);
   console.log(`method:      ${delivery.method}`);
-  console.log(`path:        ${delivery.path}`);
+  console.log(`path:        ${flags.raw ? delivery.path : redactPath(delivery.path)}`);
   console.log(`remoteAddr:  ${delivery.remoteAddress ?? '(unknown)'}`);
   console.log('headers:');
   const headers = flags.raw ? delivery.headers : redactHeaders(delivery.headers);
@@ -142,6 +123,7 @@ async function cmdReplay(id: string | undefined, flags: Record<string, string | 
 
   const result = await replayDelivery(delivery, {
     to,
+    allowRemote: flags['allow-remote'] === true,
     resign:
       resignScheme && resignSecret
         ? {
@@ -180,11 +162,10 @@ async function cmdVerify(id: string | undefined, flags: Record<string, string | 
     return;
   }
 
-  const toleranceFlag = flagString(flags, 'tolerance');
   const result = verifyDelivery(delivery, {
     scheme,
     secret,
-    toleranceSeconds: toleranceFlag ? Number.parseInt(toleranceFlag, 10) : undefined,
+    toleranceSeconds: flagInt(flags, 'tolerance'),
     generic:
       scheme === 'generic'
         ? {
@@ -239,6 +220,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  console.error(err instanceof Error ? err.stack ?? err.message : String(err));
+  if (err instanceof UsageError || err instanceof ReplayTargetError) {
+    console.error(`error: ${err.message}`);
+  } else {
+    console.error(err instanceof Error ? err.stack ?? err.message : String(err));
+  }
   process.exitCode = 1;
 });

@@ -106,7 +106,7 @@ webhook-lens is not published to npm; without `npm link`, run the CLI as
 `node dist/cli.js <command>`. The library import below resolves once the clone
 is linked (`npm link webhook-lens` in your project).
 
-Requires Node.js 18 or newer.
+Requires Node.js 20 or newer.
 
 ## Usage
 

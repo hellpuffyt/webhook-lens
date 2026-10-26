@@ -14,20 +14,69 @@ provider (or a `curl`/test client) at it, and it will:
 - replay any captured delivery against your real handler, as many times as
   you want, optionally re-signed with a different secret.
 
+## Demo
+
+A real end-to-end run on the current code, using synthetic payloads and the
+throwaway secrets `test-secret` and `local-dev-secret`. It runs from the
+cloned repository after `npm ci && npm run build`, with `--dir demo` so the
+captures land in `./demo` instead of the default `.webhook-lens/deliveries`.
+
+<img src="docs/screenshots/capture-signed-delivery.png" width="100%" alt="Terminal capture: webhook-lens listen on port 8787 logs a captured POST /hooks/github; curl sends a JSON body signed with HMAC-SHA256 and gets back status captured with the delivery id; list shows the 73-byte delivery.">
+
+*Terminal capture: start the receiver, send a signed delivery with curl, list it.*
+
+<img src="docs/screenshots/inspect-and-verify.png" width="100%" alt="Terminal capture: show prints the captured method, path, headers with the signature header redacted, and the raw body; verify with the right secret prints valid true, with a wrong secret valid false and the reason.">
+
+*Terminal capture: inspect the captured headers and body (signature redacted), then verify it with the right and a wrong secret.*
+
+<img src="docs/screenshots/replay-captured-request.png" width="100%" alt="Terminal capture: a small Node handler on port 4000 receives the replayed request with a new signature; replay reports status 200 and the handler's response; a replay to 169.254.169.254 is refused because it is not a loopback host.">
+
+*Terminal capture: replay the delivery to a local handler, re-signed with a different secret, and the refusal of a non-loopback target.*
+
+The same session as text:
+
+```bash
+# terminal 1
+node dist/cli.js listen --port 8787 --dir demo
+
+# terminal 2
+BODY='{"action":"opened","number":42,"repository":{"full_name":"example/demo"}}'
+SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac test-secret | sed 's/^.* //')"
+curl -s -X POST http://127.0.0.1:8787/hooks/github -H 'content-type: application/json' \
+  -H 'x-github-event: pull_request' -H "x-hub-signature-256: $SIG" --data-binary "$BODY"
+# {"status":"captured","id":"e58fe025-c3e7-4cec-913b-e529fe71dda0"}
+
+node dist/cli.js list --dir demo
+node dist/cli.js show e58fe025-c3e7-4cec-913b-e529fe71dda0 --dir demo
+node dist/cli.js verify e58fe025-c3e7-4cec-913b-e529fe71dda0 --scheme github --secret test-secret --dir demo    # valid: true, exit 0
+node dist/cli.js verify e58fe025-c3e7-4cec-913b-e529fe71dda0 --scheme github --secret wrong-secret --dir demo   # valid: false, exit 1
+
+# terminal 3: a throwaway handler to replay into
+node -e 'require("http").createServer((req, res) => { let n = 0; req.on("data", (c) => (n += c.length)).on("end", () => { console.log(req.method, req.url, req.headers["x-hub-signature-256"], n + " bytes"); res.end("handled " + n + " bytes"); }); }).listen(4000)'
+
+# terminal 2
+node dist/cli.js replay e58fe025-c3e7-4cec-913b-e529fe71dda0 --to http://127.0.0.1:4000/webhooks/github \
+  --resign-scheme github --resign-secret local-dev-secret --dir demo
+```
+
+The id is generated per capture, so substitute the one `curl` prints. The
+signature the handler logs is `HMAC-SHA256(local-dev-secret, body)`, which you
+can confirm with the same `openssl` pipeline.
+
 ## Why
 
 Debugging a webhook integration usually means one of two unpleasant options:
 push to production and read logs, or route the payload through a hosted
 tunnel that now sees every request you receive. `webhook-lens` runs entirely
-on your machine: nothing leaves it. It also gets the fiddly part right --
+on your machine: nothing leaves it. It also gets the fiddly part right:
 verifying a provider's signature over the *exact bytes it sent*, not a
 JSON-parsed-and-re-serialized approximation of them, which is where most
 homegrown verification scripts quietly break.
 
 ## Features
 
-- **Local receiver** -- an HTTP server (`node:http`) that captures method,
-  path, headers, and the raw request body.
+- **Local receiver**: an HTTP server (`node:http`) that captures method,
+  path, headers, and the raw request body. Bodies over 10 MB get a `413`.
 - **Signature verification** for five schemes, each implemented from its
   provider's documented algorithm and compared with `crypto.timingSafeEqual`:
   - GitHub (`X-Hub-Signature-256`)
@@ -35,39 +84,41 @@ homegrown verification scripts quietly break.
   - Shopify (`X-Shopify-Hmac-Sha256`)
   - Slack (`X-Slack-Signature`)
   - A generic, configurable HMAC scheme for anything else
-- **Storage** -- every capture is written to disk as a standalone JSON file,
+- **Storage**: every capture is written to disk as a standalone JSON file,
   listable and inspectable later.
-- **Replay** -- re-send a captured delivery to a local target URL
+- **Replay**: re-send a captured delivery to a local target URL
   (`localhost`, `127.0.0.0/8`, `[::1]`; other hosts only with an explicit
   `--allow-remote`), with the original raw body and headers preserved,
   optionally re-signed with your own secret.
-- **Redaction** -- signatures, auth headers, other secret-looking headers,
+- **Redaction**: signatures, auth headers, other secret-looking headers,
   and secret-looking query parameters are masked in CLI output by default.
 
 ## Architecture
 
 ```
 src/
-  server.ts        HTTP receiver: reads raw request bytes, never parses them
-  storage.ts        Filesystem-backed delivery store (one JSON file per capture)
-  replay.ts          Re-sends a stored delivery, with optional re-signing
-  redact.ts           Header/secret redaction for safe CLI output
-  types.ts            Shared types (Delivery, VerifyOptions, ...)
+  cli.ts              listen / list / show / replay / verify commands
+  args.ts             strict flag parsing (--port, --tolerance, ...)
+  server.ts           HTTP receiver: reads raw request bytes, never parses them
+  storage.ts          filesystem delivery store, one JSON file per capture
+  replay.ts           re-sends a stored delivery, optionally re-signed; loopback check
+  redact.ts           header, path and query-string redaction for CLI output
+  types.ts            shared types (Delivery, VerifyOptions, ...)
+  index.ts            library entry point (re-exports the modules above)
   signatures/
+    index.ts          verifyDelivery(): dispatches a Delivery to the right scheme
     github.ts         X-Hub-Signature-256 (HMAC-SHA256, hex, "sha256=" prefix)
-    stripe.ts          Stripe-Signature (HMAC-SHA256, hex, t=/v1= + replay window)
+    stripe.ts         Stripe-Signature (HMAC-SHA256, hex, t=/v1=, replay window)
     shopify.ts        X-Shopify-Hmac-Sha256 (HMAC-SHA256, base64)
-    slack.ts            X-Slack-Signature (HMAC-SHA256, hex, "v0:ts:body" basestring)
-    generic.ts          Configurable HMAC (any header, algorithm, encoding, prefix)
-    util.ts             Constant-time comparison helpers
-    index.ts             verifyDelivery(): dispatches a Delivery to the right scheme
-  cli.ts                listen / list / show / replay / verify commands
+    slack.ts          X-Slack-Signature (HMAC-SHA256, hex, "v0:ts:body" basestring)
+    generic.ts        configurable HMAC (any header, algorithm, encoding, prefix)
+    util.ts           constant-time comparison helpers
 ```
 
 ### Design point: the raw body is never re-serialized
 
 Every provider signature here is computed over the *exact bytes* the
-provider sent -- not over `JSON.stringify(JSON.parse(body))`. Those two are
+provider sent, not over `JSON.stringify(JSON.parse(body))`. Those two are
 not the same thing: key order, whitespace, numeric formatting, and unicode
 escaping can all change silently when a body is parsed and re-serialized,
 which changes the bytes and breaks any signature computed over them.
@@ -201,10 +252,17 @@ if (!result.valid) {
 ## Testing
 
 ```bash
-npm test          # vitest, 110 tests
-npx tsc --noEmit  # type-check
-npx eslint .       # lint
+npm test            # vitest, 110 tests
+npm run typecheck   # tsc --noEmit
+npm run lint        # eslint . --ext .ts
+npm run build       # emits dist/
 ```
+
+CI runs the tests on Node 20 and 22 on Ubuntu, Windows and macOS, a lint,
+type-check and build job, and a smoke test that starts the built receiver,
+posts a signed delivery, and checks that `verify` passes with the right
+secret, fails with a wrong one, refuses a non-loopback replay target, and
+rejects a malformed `--tolerance`.
 
 The test suite covers, among other things: valid and invalid signatures for
 every scheme, tampered-body detection, Stripe replay-window expiry, raw-body
@@ -235,7 +293,7 @@ and the HTTP receiver exercised against a real server on an ephemeral port.
   targets are accepted, and URLs with embedded credentials are refused.
 - Numeric flags (`--port`, `--tolerance`) are parsed strictly; a malformed
   `--tolerance` is an error rather than a silently disabled replay window.
-- The receiver binds to `127.0.0.1` by default -- it is meant for local use,
+- The receiver binds to `127.0.0.1` by default; it is meant for local use,
   not as an internet-facing endpoint. Binding another host prints a warning.
   There is no authentication, rate limiting, or disk quota on the receiver.
 - Secrets passed as `--secret` / `--resign-secret` are command-line
@@ -249,6 +307,10 @@ and the HTTP receiver exercised against a real server on an ephemeral port.
 If you find a security issue, please report it privately as described in
 [SECURITY.md](SECURITY.md) rather than in a public issue.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
-MIT © 2026 Prabesh Sharma
+MIT © 2026 Prabesh Sharma. See [LICENSE](LICENSE).
